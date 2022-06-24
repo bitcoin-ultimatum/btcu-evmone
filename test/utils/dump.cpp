@@ -4,26 +4,26 @@
 
 #include "dump.hpp"
 #include <evmc/instructions.h>
-#include <evmone/advanced_analysis.hpp>
+#include <evmone/analysis.hpp>
 #include <test/utils/utils.hpp>
 #include <iomanip>
 #include <iostream>
 
-void dump(const evmone::advanced::AdvancedCodeAnalysis& analysis)
+void dump(const evmone::AdvancedCodeAnalysis& analysis)
 {
-    using namespace evmone::advanced;
+    using namespace evmone;
 
     auto names = evmc_get_instruction_names_table(EVMC_BYZANTIUM);
     auto metrics = evmc_get_instruction_metrics_table(EVMC_BYZANTIUM);
 
-    const BlockInfo* block = nullptr;
+    const block_info* block = nullptr;
     for (size_t i = 0; i < analysis.instrs.size(); ++i)
     {
         auto& instr = analysis.instrs[i];
-        auto c = static_cast<uint8_t>(reinterpret_cast<uintptr_t>(instr.fn));
+        auto c = static_cast<uint8_t>((size_t)instr.fn);
         auto name = names[c];
         auto gas_cost = metrics[c].gas_cost;
-        if (name == nullptr)
+        if (!name)
             name = "XX";
 
         if (c == OPX_BEGINBLOCK)

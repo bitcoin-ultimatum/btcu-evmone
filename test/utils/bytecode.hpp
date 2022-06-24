@@ -5,7 +5,6 @@
 
 #include <evmc/evmc.hpp>
 #include <evmc/instructions.h>
-#include <intx/intx.hpp>
 #include <test/utils/utils.hpp>
 #include <algorithm>
 #include <ostream>
@@ -25,7 +24,7 @@ struct bytecode : bytes
 
     template <typename T,
         typename = typename std::enable_if_t<std::is_convertible_v<T, std::string_view>>>
-    bytecode(T hex) : bytes{from_spaced_hex(hex).value()}
+    bytecode(T hex) : bytes{from_hex(hex)}
     {}
 
     bytecode(uint64_t n) : bytes{push(n)} {}
@@ -39,11 +38,6 @@ inline bytecode operator+(bytecode a, bytecode b)
 inline bytecode& operator+=(bytecode& a, bytecode b)
 {
     return a = a + b;
-}
-
-inline bytecode& operator+=(bytecode& a, bytes b)
-{
-    return a = a + bytecode{b};
 }
 
 inline bool operator==(const bytecode& a, const bytecode& b) noexcept
@@ -69,36 +63,6 @@ inline bytecode operator*(int n, evmc_opcode op)
     return n * bytecode{op};
 }
 
-inline bytes big_endian(uint16_t value)
-{
-    return {static_cast<uint8_t>(value >> 8), static_cast<uint8_t>(value)};
-}
-
-inline bytecode eof_header(uint8_t version, uint16_t code_size, uint16_t data_size)
-{
-    bytecode out{bytes{0xEF, 0x00, version}};
-
-    out += "01" + big_endian(code_size);
-
-    if (data_size != 0)
-        out += "02" + big_endian(data_size);
-
-    out += "00";
-    return out;
-}
-
-inline bytecode eof1_header(uint16_t code_size, uint16_t data_size = 0)
-{
-    return eof_header(1, code_size, data_size);
-}
-
-inline bytecode eof1_bytecode(bytecode code, bytecode data = {})
-{
-    assert(code.size() <= std::numeric_limits<uint16_t>::max());
-    assert(data.size() <= std::numeric_limits<uint16_t>::max());
-    return eof1_header(static_cast<uint16_t>(code.size()), static_cast<uint16_t>(data.size())) +
-           code + data;
-}
 
 inline bytecode push(bytes_view data)
 {
@@ -111,14 +75,7 @@ inline bytecode push(bytes_view data)
 
 inline bytecode push(std::string_view hex_data)
 {
-    return push(from_spaced_hex(hex_data).value());
-}
-
-inline bytecode push(const intx::uint256& value)
-{
-    uint8_t data[sizeof(value)]{};
-    intx::be::store(data, value);
-    return push({data, std::size(data)});
+    return push(from_hex(hex_data));
 }
 
 bytecode push(evmc_opcode opcode) = delete;
@@ -151,11 +108,6 @@ inline bytecode push(evmc::bytes32 bs)
 {
     bytes_view data{bs.bytes, sizeof(bs.bytes)};
     return push(data.substr(std::min(data.find_first_not_of(uint8_t{0}), size_t{31})));
-}
-
-inline bytecode push(evmc::address addr)
-{
-    return push({std::data(addr.bytes), std::size(addr.bytes)});
 }
 
 inline bytecode dup1(bytecode c)
@@ -241,11 +193,6 @@ inline bytecode ret_top()
 inline bytecode ret(bytecode c)
 {
     return c + ret_top();
-}
-
-inline bytecode revert(bytecode index, bytecode size)
-{
-    return size + index + OP_REVERT;
 }
 
 inline bytecode keccak256(bytecode index, bytecode size)

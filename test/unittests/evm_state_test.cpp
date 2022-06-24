@@ -47,10 +47,10 @@ TEST_P(evm, codecopy_combinations)
     EXPECT_EQ(output, bytes_view{});
 
     execute(code, "1301");
-    EXPECT_EQ(output, "00"_hex);
+    EXPECT_EQ(output, from_hex("00"));
 
     execute(code, "1401");
-    EXPECT_EQ(output, "00"_hex);
+    EXPECT_EQ(output, from_hex("00"));
 
     execute(code, "1201");
     EXPECT_EQ(output, code.substr(0x12, 1));
@@ -77,7 +77,7 @@ TEST_P(evm, sstore_pop_stack)
 TEST_P(evm, sload_cost_pre_tangerine_whistle)
 {
     rev = EVMC_HOMESTEAD;
-    const auto& account = host.accounts[msg.recipient];
+    const auto& account = host.accounts[msg.destination];
     execute(56, bytecode{"60008054"});
     EXPECT_EQ(result.status_code, EVMC_SUCCESS);
     EXPECT_EQ(result.gas_left, 0);
@@ -89,29 +89,29 @@ TEST_P(evm, sstore_out_of_block_gas)
     const auto code = push(0) + sstore(0, 1) + OP_POP;
 
     // Barely enough gas to execute successfully.
-    host.accounts[msg.recipient] = {};  // Reset contract account.
+    host.accounts[msg.destination] = {};  // Reset contract account.
     execute(20011, code);
     EXPECT_GAS_USED(EVMC_SUCCESS, 20011);
 
     // Out of block gas - 1 too low.
-    host.accounts[msg.recipient] = {};  // Reset contract account.
+    host.accounts[msg.destination] = {};  // Reset contract account.
     execute(20010, code);
     EXPECT_STATUS(EVMC_OUT_OF_GAS);
 
     // Out of block gas - 2 too low.
-    host.accounts[msg.recipient] = {};  // Reset contract account.
+    host.accounts[msg.destination] = {};  // Reset contract account.
     execute(20009, code);
     EXPECT_STATUS(EVMC_OUT_OF_GAS);
 
     // SSTORE instructions out of gas.
-    host.accounts[msg.recipient] = {};  // Reset contract account.
+    host.accounts[msg.destination] = {};  // Reset contract account.
     execute(20008, code);
     EXPECT_STATUS(EVMC_OUT_OF_GAS);
 }
 
 TEST_P(evm, sstore_cost)
 {
-    auto& storage = host.accounts[msg.recipient].storage;
+    auto& storage = host.accounts[msg.destination].storage;
 
     auto v1 = evmc::bytes32{};
     v1.bytes[31] = 1;
@@ -123,34 +123,34 @@ TEST_P(evm, sstore_cost)
 
         // Added:
         storage.clear();
-        execute(20006, sstore(1, 1));
+        execute(20006, sstore(1, push(1)));
         EXPECT_EQ(result.status_code, EVMC_SUCCESS);
         storage.clear();
-        execute(20005, sstore(1, 1));
+        execute(20005, sstore(1, push(1)));
         EXPECT_EQ(result.status_code, EVMC_OUT_OF_GAS);
 
         // Deleted:
         storage.clear();
         storage[v1] = v1;
-        execute(5006, sstore(1, 0));
+        execute(5006, sstore(1, push(0)));
         EXPECT_EQ(result.status_code, EVMC_SUCCESS);
         storage[v1] = v1;
-        execute(5005, sstore(1, 0));
+        execute(5005, sstore(1, push(0)));
         EXPECT_EQ(result.status_code, EVMC_OUT_OF_GAS);
 
         // Modified:
         storage.clear();
         storage[v1] = v1;
-        execute(5006, sstore(1, 2));
+        execute(5006, sstore(1, push(2)));
         EXPECT_EQ(result.status_code, EVMC_SUCCESS);
         storage[v1] = v1;
-        execute(5005, sstore(1, 2));
+        execute(5005, sstore(1, push(2)));
         EXPECT_EQ(result.status_code, EVMC_OUT_OF_GAS);
 
         // Unchanged:
         storage.clear();
         storage[v1] = v1;
-        execute(sstore(1, 1));
+        execute(sstore(1, push(1)));
         EXPECT_EQ(result.status_code, EVMC_SUCCESS);
         if (rev >= EVMC_ISTANBUL)
             EXPECT_EQ(gas_used, 806);
@@ -158,12 +158,12 @@ TEST_P(evm, sstore_cost)
             EXPECT_EQ(gas_used, 206);
         else
             EXPECT_EQ(gas_used, 5006);
-        execute(205, sstore(1, 1));
+        execute(205, sstore(1, push(1)));
         EXPECT_EQ(result.status_code, EVMC_OUT_OF_GAS);
 
         // Added & unchanged:
         storage.clear();
-        execute(sstore(1, 1) + sstore(1, 1));
+        execute(sstore(1, push(1)) + sstore(1, push(1)));
         EXPECT_EQ(result.status_code, EVMC_SUCCESS);
         if (rev >= EVMC_ISTANBUL)
             EXPECT_EQ(gas_used, 20812);
@@ -175,7 +175,7 @@ TEST_P(evm, sstore_cost)
         // Modified again:
         storage.clear();
         storage[v1] = {v1, true};
-        execute(sstore(1, 2));
+        execute(sstore(1, push(2)));
         EXPECT_EQ(result.status_code, EVMC_SUCCESS);
         if (rev >= EVMC_ISTANBUL)
             EXPECT_EQ(gas_used, 806);
@@ -186,7 +186,7 @@ TEST_P(evm, sstore_cost)
 
         // Added & modified again:
         storage.clear();
-        execute(sstore(1, 1) + sstore(1, 2));
+        execute(sstore(1, push(1)) + sstore(1, push(2)));
         EXPECT_EQ(result.status_code, EVMC_SUCCESS);
         if (rev >= EVMC_ISTANBUL)
             EXPECT_EQ(gas_used, 20812);
@@ -198,7 +198,7 @@ TEST_P(evm, sstore_cost)
         // Modified & modified again:
         storage.clear();
         storage[v1] = v1;
-        execute(sstore(1, 2) + sstore(1, 3));
+        execute(sstore(1, push(2)) + sstore(1, push(3)));
         EXPECT_EQ(result.status_code, EVMC_SUCCESS);
         if (rev >= EVMC_ISTANBUL)
             EXPECT_EQ(gas_used, 5812);
@@ -210,7 +210,7 @@ TEST_P(evm, sstore_cost)
         // Modified & modified again back to original:
         storage.clear();
         storage[v1] = v1;
-        execute(sstore(1, 2) + sstore(1, 1));
+        execute(sstore(1, push(2)) + sstore(1, push(1)));
         EXPECT_EQ(result.status_code, EVMC_SUCCESS);
         if (rev >= EVMC_ISTANBUL)
             EXPECT_EQ(gas_used, 5812);
@@ -251,11 +251,11 @@ TEST_P(evm, tx_context)
     host.tx_context.chain_id.bytes[28] = 0xaa;
     host.tx_context.block_coinbase.bytes[1] = 0xcc;
     host.tx_context.tx_origin.bytes[2] = 0x55;
-    host.tx_context.block_prev_randao.bytes[1] = 0xdd;
+    host.tx_context.block_difficulty.bytes[1] = 0xdd;
     host.tx_context.tx_gas_price.bytes[2] = 0x66;
 
     auto const code = bytecode{} + OP_TIMESTAMP + OP_COINBASE + OP_OR + OP_GASPRICE + OP_OR +
-                      OP_NUMBER + OP_OR + OP_PREVRANDAO + OP_OR + OP_GASLIMIT + OP_OR + OP_ORIGIN +
+                      OP_NUMBER + OP_OR + OP_DIFFICULTY + OP_OR + OP_GASLIMIT + OP_OR + OP_ORIGIN +
                       OP_OR + OP_CHAINID + OP_OR + ret_top();
     execute(52, code);
     EXPECT_EQ(result.status_code, EVMC_SUCCESS);
@@ -273,7 +273,7 @@ TEST_P(evm, tx_context)
 
 TEST_P(evm, balance)
 {
-    host.accounts[msg.recipient].set_balance(0x0504030201);
+    host.accounts[msg.destination].set_balance(0x0504030201);
     auto code = bytecode{} + OP_ADDRESS + OP_BALANCE + mstore(0) + ret(32 - 6, 6);
     execute(417, code);
     EXPECT_GAS_USED(EVMC_SUCCESS, 417);
@@ -289,8 +289,8 @@ TEST_P(evm, balance)
 TEST_P(evm, account_info_homestead)
 {
     rev = EVMC_HOMESTEAD;
-    host.accounts[msg.recipient].set_balance(1);
-    host.accounts[msg.recipient].code = bytes{1};
+    host.accounts[msg.destination].set_balance(1);
+    host.accounts[msg.destination].code = bytes{1};
 
     execute(bytecode{} + OP_ADDRESS + OP_BALANCE + ret_top());
     EXPECT_GAS_USED(EVMC_SUCCESS, 37);
@@ -308,7 +308,7 @@ TEST_P(evm, account_info_homestead)
 
 TEST_P(evm, selfbalance)
 {
-    host.accounts[msg.recipient].set_balance(0x0504030201);
+    host.accounts[msg.destination].set_balance(0x0504030201);
     // NOTE: adding push here to balance out the stack pre-Istanbul (needed to get undefined
     // instruction as a result)
     auto code = bytecode{} + push(1) + OP_SELFBALANCE + mstore(0) + ret(32 - 6, 6);
@@ -410,26 +410,26 @@ TEST_P(evm, selfdestruct)
 TEST_P(evm, selfdestruct_with_balance)
 {
     constexpr auto beneficiary = 0x00000000000000000000000000000000000000be_address;
-    const auto code = push(beneficiary) + OP_SELFDESTRUCT;
-    msg.recipient = evmc_address{{0x5e}};
+    const auto code = push({beneficiary.bytes, sizeof(beneficiary)}) + OP_SELFDESTRUCT;
+    msg.destination = evmc_address{{0x5e}};
 
 
-    host.accounts[msg.recipient].set_balance(0);
+    host.accounts[msg.destination].set_balance(0);
 
     rev = EVMC_HOMESTEAD;
     execute(3, code);
     EXPECT_GAS_USED(EVMC_SUCCESS, 3);
     EXPECT_EQ(result.gas_left, 0);
     ASSERT_EQ(host.recorded_account_accesses.size(), 1);
-    EXPECT_EQ(host.recorded_account_accesses[0], msg.recipient);  // Selfdestruct.
+    EXPECT_EQ(host.recorded_account_accesses[0], msg.destination);  // Selfdestruct.
     host.recorded_account_accesses.clear();
 
     rev = EVMC_TANGERINE_WHISTLE;
     execute(30003, code);
     EXPECT_GAS_USED(EVMC_SUCCESS, 30003);
     ASSERT_EQ(host.recorded_account_accesses.size(), 2);
-    EXPECT_EQ(host.recorded_account_accesses[0], beneficiary);    // Exists?
-    EXPECT_EQ(host.recorded_account_accesses[1], msg.recipient);  // Selfdestruct.
+    EXPECT_EQ(host.recorded_account_accesses[0], beneficiary);      // Exists?
+    EXPECT_EQ(host.recorded_account_accesses[1], msg.destination);  // Selfdestruct.
     host.recorded_account_accesses.clear();
 
     execute(30002, code);
@@ -443,8 +443,8 @@ TEST_P(evm, selfdestruct_with_balance)
     execute(5003, code);
     EXPECT_GAS_USED(EVMC_SUCCESS, 5003);
     ASSERT_EQ(host.recorded_account_accesses.size(), 2);
-    EXPECT_EQ(host.recorded_account_accesses[0], msg.recipient);  // Balance.
-    EXPECT_EQ(host.recorded_account_accesses[1], msg.recipient);  // Selfdestruct.
+    EXPECT_EQ(host.recorded_account_accesses[0], msg.destination);  // Balance.
+    EXPECT_EQ(host.recorded_account_accesses[1], msg.destination);  // Selfdestruct.
     host.recorded_account_accesses.clear();
 
     execute(5002, code);
@@ -454,22 +454,22 @@ TEST_P(evm, selfdestruct_with_balance)
     host.recorded_account_accesses.clear();
 
 
-    host.accounts[msg.recipient].set_balance(1);
+    host.accounts[msg.destination].set_balance(1);
 
     rev = EVMC_HOMESTEAD;
     execute(3, code);
     EXPECT_GAS_USED(EVMC_SUCCESS, 3);
     EXPECT_EQ(result.gas_left, 0);
     ASSERT_EQ(host.recorded_account_accesses.size(), 1);
-    EXPECT_EQ(host.recorded_account_accesses[0], msg.recipient);  // Selfdestruct.
+    EXPECT_EQ(host.recorded_account_accesses[0], msg.destination);  // Selfdestruct.
     host.recorded_account_accesses.clear();
 
     rev = EVMC_TANGERINE_WHISTLE;
     execute(30003, code);
     EXPECT_GAS_USED(EVMC_SUCCESS, 30003);
     ASSERT_EQ(host.recorded_account_accesses.size(), 2);
-    EXPECT_EQ(host.recorded_account_accesses[0], beneficiary);    // Exists?
-    EXPECT_EQ(host.recorded_account_accesses[1], msg.recipient);  // Selfdestruct.
+    EXPECT_EQ(host.recorded_account_accesses[0], beneficiary);      // Exists?
+    EXPECT_EQ(host.recorded_account_accesses[1], msg.destination);  // Selfdestruct.
     host.recorded_account_accesses.clear();
 
     execute(30002, code);
@@ -483,39 +483,39 @@ TEST_P(evm, selfdestruct_with_balance)
     execute(30003, code);
     EXPECT_GAS_USED(EVMC_SUCCESS, 30003);
     ASSERT_EQ(host.recorded_account_accesses.size(), 3);
-    EXPECT_EQ(host.recorded_account_accesses[0], msg.recipient);  // Balance.
-    EXPECT_EQ(host.recorded_account_accesses[1], beneficiary);    // Exists?
-    EXPECT_EQ(host.recorded_account_accesses[2], msg.recipient);  // Selfdestruct.
+    EXPECT_EQ(host.recorded_account_accesses[0], msg.destination);  // Balance.
+    EXPECT_EQ(host.recorded_account_accesses[1], beneficiary);      // Exists?
+    EXPECT_EQ(host.recorded_account_accesses[2], msg.destination);  // Selfdestruct.
     host.recorded_account_accesses.clear();
 
     execute(30002, code);
     EXPECT_GAS_USED(EVMC_OUT_OF_GAS, 30002);
     EXPECT_EQ(result.gas_left, 0);
     ASSERT_EQ(host.recorded_account_accesses.size(), 2);
-    EXPECT_EQ(host.recorded_account_accesses[0], msg.recipient);  // Balance.
-    EXPECT_EQ(host.recorded_account_accesses[1], beneficiary);    // Exists?
+    EXPECT_EQ(host.recorded_account_accesses[0], msg.destination);  // Balance.
+    EXPECT_EQ(host.recorded_account_accesses[1], beneficiary);      // Exists?
     host.recorded_account_accesses.clear();
 
 
     host.accounts[beneficiary] = {};  // Beneficiary exists.
 
 
-    host.accounts[msg.recipient].set_balance(0);
+    host.accounts[msg.destination].set_balance(0);
 
     rev = EVMC_HOMESTEAD;
     execute(3, code);
     EXPECT_GAS_USED(EVMC_SUCCESS, 3);
     EXPECT_EQ(result.gas_left, 0);
     ASSERT_EQ(host.recorded_account_accesses.size(), 1);
-    EXPECT_EQ(host.recorded_account_accesses[0], msg.recipient);  // Selfdestruct.
+    EXPECT_EQ(host.recorded_account_accesses[0], msg.destination);  // Selfdestruct.
     host.recorded_account_accesses.clear();
 
     rev = EVMC_TANGERINE_WHISTLE;
     execute(5003, code);
     EXPECT_GAS_USED(EVMC_SUCCESS, 5003);
     ASSERT_EQ(host.recorded_account_accesses.size(), 2);
-    EXPECT_EQ(host.recorded_account_accesses[0], beneficiary);    // Exists?
-    EXPECT_EQ(host.recorded_account_accesses[1], msg.recipient);  // Selfdestruct.
+    EXPECT_EQ(host.recorded_account_accesses[0], beneficiary);      // Exists?
+    EXPECT_EQ(host.recorded_account_accesses[1], msg.destination);  // Selfdestruct.
     host.recorded_account_accesses.clear();
 
     execute(5002, code);
@@ -528,8 +528,8 @@ TEST_P(evm, selfdestruct_with_balance)
     execute(5003, code);
     EXPECT_GAS_USED(EVMC_SUCCESS, 5003);
     ASSERT_EQ(host.recorded_account_accesses.size(), 2);
-    EXPECT_EQ(host.recorded_account_accesses[0], msg.recipient);  // Balance.
-    EXPECT_EQ(host.recorded_account_accesses[1], msg.recipient);  // Selfdestruct.
+    EXPECT_EQ(host.recorded_account_accesses[0], msg.destination);  // Balance.
+    EXPECT_EQ(host.recorded_account_accesses[1], msg.destination);  // Selfdestruct.
     host.recorded_account_accesses.clear();
 
     execute(5002, code);
@@ -539,22 +539,22 @@ TEST_P(evm, selfdestruct_with_balance)
     host.recorded_account_accesses.clear();
 
 
-    host.accounts[msg.recipient].set_balance(1);
+    host.accounts[msg.destination].set_balance(1);
 
     rev = EVMC_HOMESTEAD;
     execute(3, code);
     EXPECT_GAS_USED(EVMC_SUCCESS, 3);
     EXPECT_EQ(result.gas_left, 0);
     ASSERT_EQ(host.recorded_account_accesses.size(), 1);
-    EXPECT_EQ(host.recorded_account_accesses[0], msg.recipient);  // Selfdestruct.
+    EXPECT_EQ(host.recorded_account_accesses[0], msg.destination);  // Selfdestruct.
     host.recorded_account_accesses.clear();
 
     rev = EVMC_TANGERINE_WHISTLE;
     execute(5003, code);
     EXPECT_GAS_USED(EVMC_SUCCESS, 5003);
     ASSERT_EQ(host.recorded_account_accesses.size(), 2);
-    EXPECT_EQ(host.recorded_account_accesses[0], beneficiary);    // Exists?
-    EXPECT_EQ(host.recorded_account_accesses[1], msg.recipient);  // Selfdestruct.
+    EXPECT_EQ(host.recorded_account_accesses[0], beneficiary);      // Exists?
+    EXPECT_EQ(host.recorded_account_accesses[1], msg.destination);  // Selfdestruct.
     host.recorded_account_accesses.clear();
 
     execute(5002, code);
@@ -567,9 +567,9 @@ TEST_P(evm, selfdestruct_with_balance)
     execute(5003, code);
     EXPECT_GAS_USED(EVMC_SUCCESS, 5003);
     ASSERT_EQ(host.recorded_account_accesses.size(), 3);
-    EXPECT_EQ(host.recorded_account_accesses[0], msg.recipient);  // Balance.
-    EXPECT_EQ(host.recorded_account_accesses[1], beneficiary);    // Exists?
-    EXPECT_EQ(host.recorded_account_accesses[2], msg.recipient);  // Selfdestruct.
+    EXPECT_EQ(host.recorded_account_accesses[0], msg.destination);  // Balance.
+    EXPECT_EQ(host.recorded_account_accesses[1], beneficiary);      // Exists?
+    EXPECT_EQ(host.recorded_account_accesses[2], msg.destination);  // Selfdestruct.
     host.recorded_account_accesses.clear();
 
     execute(5002, code);
@@ -647,7 +647,7 @@ TEST_P(evm, extcodecopy_big_index)
     constexpr auto index = uint64_t{std::numeric_limits<uint32_t>::max()} + 1;
     const auto code = dup1(1) + push(index) + dup1(0) + OP_EXTCODECOPY + ret(0, {});
     execute(code);
-    EXPECT_EQ(output, "00"_hex);
+    EXPECT_EQ(output, from_hex("00"));
 }
 
 TEST_P(evm, extcodehash)
@@ -744,7 +744,7 @@ TEST_P(evm, extcodecopy_buffer_overflow)
     const auto code = bytecode{} + OP_NUMBER + OP_TIMESTAMP + OP_CALLDATASIZE + OP_ADDRESS +
                       OP_EXTCODECOPY + ret(OP_CALLDATASIZE, OP_NUMBER);
 
-    host.accounts[msg.recipient].code = code;
+    host.accounts[msg.destination].code = code;
 
     const auto s = static_cast<int>(code.size());
     const auto values = {0, 1, s - 1, s, s + 1, 5000};

@@ -3,6 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
-#include <evmone/advanced_analysis.hpp>
+#include <evmone/analysis.hpp>
 
-void dump(const evmone::advanced::AdvancedCodeAnalysis& analysis);
+void dump(const evmone::AdvancedCodeAnalysis& analysis);

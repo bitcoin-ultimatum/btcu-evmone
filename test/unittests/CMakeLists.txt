@@ -9,24 +9,17 @@ find_package(GTest CONFIG REQUIRED)
 add_executable(evmone-unittests
     analysis_test.cpp
     bytecode_test.cpp
-    eof_test.cpp
-    eof_validation_test.cpp
     evm_fixture.cpp
     evm_fixture.hpp
     evm_test.cpp
     evm_calls_test.cpp
-    evm_control_flow_test.cpp
     evm_eip2929_test.cpp
     evm_eip3198_basefee_test.cpp
-    evm_eip3855_push0_test.cpp
-    evm_eof_test.cpp
-    evm_memory_test.cpp
     evm_state_test.cpp
     evm_other_test.cpp
-    evm_benchmark_test.cpp
     evmone_test.cpp
     execution_state_test.cpp
-    instructions_test.cpp
+    op_table_test.cpp
     tracing_test.cpp
     utils_test.cpp
 )

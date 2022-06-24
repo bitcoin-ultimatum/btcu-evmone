@@ -1,8 +1,12 @@
 // evmone: Fast Ethereum Virtual Machine implementation
-// Copyright 2019 The evmone Authors.
+// Copyright 2019-2020 The evmone Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "evm_fixture.hpp"
+#include <evmc/instructions.h>
+#include <evmone/limits.hpp>
+#include <intx/intx.hpp>
+#include <algorithm>
 #include <numeric>
 
 using namespace evmc::literals;
@@ -102,8 +106,7 @@ TEST_P(evm, dup_stack_underflow)
 
 TEST_P(evm, sub_and_swap)
 {
-    execute(33, push(1) + OP_DUP1 + OP_DUP2 + OP_SUB + OP_DUP1 + OP_DUP3 + OP_SWAP1 + OP_MSTORE +
-                    push(32) + OP_SWAP1 + OP_RETURN);
+    execute(33, "600180810380829052602090f3");
     EXPECT_EQ(result.status_code, EVMC_SUCCESS);
     EXPECT_EQ(result.gas_left, 0);
     ASSERT_EQ(result.output_size, 32);
@@ -150,6 +153,25 @@ TEST_P(evm, swapsn_push)
     rev = EVMC_MAX_REVISION;
     execute(code);
     EXPECT_STATUS(EVMC_BAD_JUMP_DESTINATION);
+}
+
+TEST_P(evm, memory_and_not)
+{
+    execute(42, "600060018019815381518252800190f3");
+    EXPECT_EQ(result.status_code, EVMC_SUCCESS);
+    EXPECT_EQ(result.gas_left, 0);
+    ASSERT_EQ(result.output_size, 2);
+    EXPECT_EQ(result.output_data[1], 0xfe);
+    EXPECT_EQ(result.output_data[0], 0);
+}
+
+TEST_P(evm, msize)
+{
+    execute(29, "60aa6022535960005360016000f3");
+    EXPECT_EQ(result.status_code, EVMC_SUCCESS);
+    EXPECT_EQ(result.gas_left, 0);
+    ASSERT_EQ(result.output_size, 1);
+    EXPECT_EQ(result.output_data[0], 0x40);
 }
 
 TEST_P(evm, gas)
@@ -224,6 +246,135 @@ TEST_P(evm, bitwise)
     EXPECT_EQ(result.output_data[2], 0xaa ^ 0xff);
 }
 
+TEST_P(evm, jump)
+{
+    std::string s;
+    s += "60be600053";  // m[0] = be
+    s += "60fa";        // fa
+    s += "60055801";    // PC + 5
+    s += "56";          // JUMP
+    s += "5050";        // POP x2
+    s += "5b";          // JUMPDEST
+    s += "600153";      // m[1] = fa
+    s += "60026000f3";  // RETURN(0,2)
+    execute(44, s);
+    EXPECT_EQ(result.status_code, EVMC_SUCCESS);
+    EXPECT_EQ(result.gas_left, 0);
+    ASSERT_EQ(result.output_size, 2);
+    EXPECT_EQ(result.output_data[0], 0xbe);
+    EXPECT_EQ(result.output_data[1], 0xfa);
+}
+
+TEST_P(evm, jumpi)
+{
+    std::string s;
+    s += "5a600557";      // GAS 5 JUMPI
+    s += "00";            // STOP
+    s += "5b60016000f3";  // JUMPDEST RETURN(0,1)
+    execute(25, s);
+    EXPECT_EQ(result.status_code, EVMC_SUCCESS);
+    EXPECT_EQ(result.gas_left, 0);
+    ASSERT_EQ(result.output_size, 1);
+    EXPECT_EQ(result.output_data[0], 0);
+}
+
+TEST_P(evm, jumpi_else)
+{
+    execute(16, dup1(OP_COINBASE) + OP_JUMPI);
+    EXPECT_GAS_USED(EVMC_SUCCESS, 15);
+    EXPECT_EQ(result.output_size, 0);
+}
+
+TEST_P(evm, jumpi_at_the_end)
+{
+    execute(1000, "5b6001600057");
+    EXPECT_EQ(result.status_code, EVMC_OUT_OF_GAS);
+    EXPECT_EQ(gas_used, 1000);
+}
+
+TEST_P(evm, bad_jumpdest)
+{
+    host.tx_context.block_number = 1;
+    host.tx_context.block_gas_limit = 0;
+    host.tx_context.block_timestamp = 0x80000000;
+    for (auto op : {OP_JUMP, OP_JUMPI})
+    {
+        execute("4345" + hex(op));
+        EXPECT_EQ(result.status_code, EVMC_BAD_JUMP_DESTINATION);
+        EXPECT_EQ(result.gas_left, 0);
+
+        execute("4342" + hex(op));
+        EXPECT_EQ(result.status_code, EVMC_BAD_JUMP_DESTINATION);
+        EXPECT_EQ(result.gas_left, 0);
+    }
+}
+
+TEST_P(evm, jump_to_block_beginning)
+{
+    const auto code = jumpi(0, OP_MSIZE) + jump(4);
+    execute(code);
+    EXPECT_STATUS(EVMC_BAD_JUMP_DESTINATION);
+}
+
+TEST_P(evm, jumpi_stack)
+{
+    const auto code = push(0xde) + jumpi(6, OP_CALLDATASIZE) + OP_JUMPDEST + ret_top();
+    execute(code, "");
+    EXPECT_OUTPUT_INT(0xde);
+    execute(code, "ee");
+    EXPECT_OUTPUT_INT(0xde);
+}
+
+TEST_P(evm, jump_over_jumpdest)
+{
+    // The code contains 2 consecutive JUMPDESTs. The JUMP at the beginning lands on the second one.
+    const auto code = push(4) + OP_JUMP + 2 * OP_JUMPDEST;
+    execute(code);
+    EXPECT_GAS_USED(EVMC_SUCCESS, 3 + 8 + 1);
+}
+
+TEST_P(evm, jump_to_missing_push_data)
+{
+    execute(push(5) + OP_JUMP + OP_PUSH1);
+    EXPECT_STATUS(EVMC_BAD_JUMP_DESTINATION);
+}
+
+TEST_P(evm, jump_to_missing_push_data2)
+{
+    execute(push(6) + OP_JUMP + OP_PUSH2 + "ef");
+    EXPECT_STATUS(EVMC_BAD_JUMP_DESTINATION);
+}
+
+TEST_P(evm, pc_sum)
+{
+    const auto code = 4 * OP_PC + 3 * OP_ADD + ret_top();
+    execute(code);
+    EXPECT_STATUS(EVMC_SUCCESS);
+    EXPECT_OUTPUT_INT(6);
+}
+
+TEST_P(evm, pc_after_jump_1)
+{
+    const auto code = push(3) + OP_JUMP + OP_JUMPDEST + OP_PC + ret_top();
+    execute(code);
+    EXPECT_STATUS(EVMC_SUCCESS);
+    EXPECT_OUTPUT_INT(4);
+}
+
+TEST_P(evm, pc_after_jump_2)
+{
+    const auto code = OP_CALLDATASIZE + push(9) + OP_JUMPI + push(12) + OP_PC + OP_SWAP1 + OP_JUMP +
+                      OP_JUMPDEST + OP_GAS + OP_PC + OP_JUMPDEST + ret_top();
+
+    execute(code, "");
+    EXPECT_STATUS(EVMC_SUCCESS);
+    EXPECT_OUTPUT_INT(6);
+
+    execute(code, "ff");
+    EXPECT_STATUS(EVMC_SUCCESS);
+    EXPECT_OUTPUT_INT(11);
+}
+
 TEST_P(evm, byte)
 {
     std::string s;
@@ -247,17 +398,6 @@ TEST_P(evm, byte)
     EXPECT_EQ(result.output_data[6], 0);
 }
 
-TEST_P(evm, byte_overflow)
-{
-    const auto code = not_(0) + push(32) + OP_BYTE + ret_top();
-    execute(code);
-    EXPECT_OUTPUT_INT(0);
-
-    const auto code2 = not_(0) + push("ffffffffffffffffffffffffffffffffffff") + OP_BYTE + ret_top();
-    execute(code2);
-    EXPECT_OUTPUT_INT(0);
-}
-
 TEST_P(evm, addmod_mulmod)
 {
     std::string s;
@@ -273,10 +413,10 @@ TEST_P(evm, addmod_mulmod)
     EXPECT_EQ(result.status_code, EVMC_SUCCESS);
     EXPECT_EQ(result.gas_left, 0);
     ASSERT_EQ(result.output_size, 64);
-    EXPECT_EQ(bytes_view(&result.output_data[0], 32),
-        "65ef55f81fe142622955e990252cb5209a11d4db113d842408fd9c7ae2a29a5a"_hex);
-    EXPECT_EQ(bytes_view(&result.output_data[32], 32),
-        "34e04890131a297202753cae4c72efd508962c9129aed8b08c8e87ab425b7258"_hex);
+    auto a = from_hex("65ef55f81fe142622955e990252cb5209a11d4db113d842408fd9c7ae2a29a5a");
+    EXPECT_EQ(a, bytes(&result.output_data[0], 32));
+    auto p = from_hex("34e04890131a297202753cae4c72efd508962c9129aed8b08c8e87ab425b7258");
+    EXPECT_EQ(p, bytes(&result.output_data[32], 32));
 }
 
 TEST_P(evm, divmod)
@@ -286,10 +426,10 @@ TEST_P(evm, divmod)
     EXPECT_EQ(result.status_code, EVMC_SUCCESS);
     EXPECT_EQ(gas_used, 61);
     ASSERT_EQ(result.output_size, 64);
-    EXPECT_EQ(bytes_view(&result.output_data[0], 32),
-        "0000000000000000000000000000000000000000000000000000000000000013"_hex);
-    EXPECT_EQ(bytes_view(&result.output_data[32], 32),
-        "08ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"_hex);
+    auto a = from_hex("0000000000000000000000000000000000000000000000000000000000000013");
+    EXPECT_EQ(a, bytes(&result.output_data[0], 32));
+    auto p = from_hex("08ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+    EXPECT_EQ(p, bytes(&result.output_data[32], 32));
 }
 
 TEST_P(evm, div_by_zero)
@@ -327,12 +467,13 @@ TEST_P(evm, signextend)
     s += "602052";      // m[32..]
     s += "60406000f3";  // RETURN(0,64)
     execute(49, s);
-    EXPECT_GAS_USED(EVMC_SUCCESS, 49);
+    EXPECT_EQ(result.status_code, EVMC_SUCCESS);
+    EXPECT_EQ(result.gas_left, 0);
     ASSERT_EQ(result.output_size, 64);
-    EXPECT_EQ(hex(bytes(&result.output_data[0], 32)),
-        "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe");
-    EXPECT_EQ(hex(bytes(&result.output_data[32], 32)),
-        "0000000000000000000000000000000000000000000000000000000000007ffe");
+    auto a = from_hex("fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe");
+    EXPECT_EQ(bytes(&result.output_data[0], 32), a);
+    auto b = from_hex("0000000000000000000000000000000000000000000000000000000000007ffe");
+    EXPECT_EQ(bytes(&result.output_data[32], 32), b);
 }
 
 TEST_P(evm, signextend_31)
@@ -340,57 +481,34 @@ TEST_P(evm, signextend_31)
     rev = EVMC_CONSTANTINOPLE;
 
     execute("61010160000360081c601e0b60005260206000f3");
-    EXPECT_GAS_USED(EVMC_SUCCESS, 38);
-    EXPECT_OUTPUT_INT(0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe_u256);
+    EXPECT_EQ(result.status_code, EVMC_SUCCESS);
+    EXPECT_EQ(gas_used, 38);
+    ASSERT_EQ(result.output_size, 32);
+    auto a = from_hex("fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe");
+    EXPECT_EQ(bytes(&result.output_data[0], 32), a);
 
     execute("61010160000360081c601f0b60005260206000f3");
-    EXPECT_GAS_USED(EVMC_SUCCESS, 38);
-    EXPECT_OUTPUT_INT(0x00fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe_u256);
-}
-
-TEST_P(evm, signextend_fuzzing)
-{
-    const auto signextend_reference = [](const intx::uint256& x, uint64_t ext) noexcept {
-        if (ext < 31)
-        {
-            const auto sign_bit = ext * 8 + 7;
-            const auto sign_mask = uint256{1} << sign_bit;
-            const auto value_mask = sign_mask - 1;
-            const auto is_neg = (x & sign_mask) != 0;
-            return is_neg ? x | ~value_mask : x & value_mask;
-        }
-        return x;
-    };
-
-    const auto code = bytecode{} + calldataload(0) + calldataload(32) + OP_SIGNEXTEND + ret_top();
-
-    for (int b = 0; b <= 0xff; ++b)
-    {
-        uint8_t input[64]{};
-
-        auto g = b;
-        for (size_t i = 0; i < 32; ++i)
-            input[i] = static_cast<uint8_t>(g++);  // Generate SIGNEXTEND base argument.
-
-        for (uint8_t e = 0; e <= 32; ++e)
-        {
-            input[63] = e;
-            execute(code, hex({input, 64}));
-            ASSERT_EQ(output.size(), sizeof(uint256));
-            const auto out = be::unsafe::load<uint256>(output.data());
-            const auto expected = signextend_reference(be::unsafe::load<uint256>(input), e);
-            ASSERT_EQ(out, expected);
-        }
-    }
+    EXPECT_EQ(result.status_code, EVMC_SUCCESS);
+    EXPECT_EQ(gas_used, 38);
+    ASSERT_EQ(result.output_size, 32);
+    a = from_hex("00fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe");
+    EXPECT_EQ(bytes(&result.output_data[0], 32), a);
 }
 
 TEST_P(evm, exp)
 {
-    const auto code = push(0x2019) + push(3) + OP_EXP + ret_top();
-    execute(131, code);
-    EXPECT_GAS_USED(EVMC_SUCCESS, 131);
+    std::string s;
+    s += "612019";      // 0x2019
+    s += "6003";        // 3
+    s += "0a";          // EXP
+    s += "600052";      // m[0..]
+    s += "60206000f3";  // RETURN(0,32)
+    execute(131, s);
+    EXPECT_EQ(result.status_code, EVMC_SUCCESS);
+    EXPECT_EQ(result.gas_left, 0);
     ASSERT_EQ(result.output_size, 32);
-    EXPECT_OUTPUT_INT(0x263cf24662b24c371a647c1340022619306e431bf3a4298d4b5998a3f1c1aaa3_u256);
+    auto a = from_hex("263cf24662b24c371a647c1340022619306e431bf3a4298d4b5998a3f1c1aaa3");
+    EXPECT_EQ(bytes(&result.output_data[0], 32), a);
 }
 
 TEST_P(evm, exp_1_0)
@@ -424,19 +542,32 @@ TEST_P(evm, exp_oog)
 TEST_P(evm, exp_pre_spurious_dragon)
 {
     rev = EVMC_TANGERINE_WHISTLE;
-    const auto code = push(0x012019) + push(3) + OP_EXP + ret_top();
-    execute(131 - 70, code);
-    EXPECT_GAS_USED(EVMC_SUCCESS, 131 - 70);
-    EXPECT_OUTPUT_INT(0x422ea3761c4f6517df7f102bb18b96abf4735099209ca21256a6b8ac4d1daaa3_u256);
+    std::string s;
+    s += "62012019";    // 0x012019
+    s += "6003";        // 3
+    s += "0a";          // EXP
+    s += "600052";      // m[0..]
+    s += "60206000f3";  // RETURN(0,32)
+    execute(131 - 70, s);
+    EXPECT_EQ(result.status_code, EVMC_SUCCESS);
+    EXPECT_EQ(result.gas_left, 0);
+    ASSERT_EQ(result.output_size, 32);
+    auto a = from_hex("422ea3761c4f6517df7f102bb18b96abf4735099209ca21256a6b8ac4d1daaa3");
+    EXPECT_EQ(bytes(&result.output_data[0], 32), a);
 }
 
 TEST_P(evm, calldataload)
 {
-    const auto code = calldataload(3) + mstore(0) + ret(0, 10);
-    execute(21, code, "0102030405");
-    EXPECT_GAS_USED(EVMC_SUCCESS, 21);
+    std::string s;
+    s += "600335";      // CALLDATALOAD(3)
+    s += "600052";      // m[0..]
+    s += "600a6000f3";  // RETURN(0,10)
+    execute(21, s, "0102030405");
+    EXPECT_EQ(result.status_code, EVMC_SUCCESS);
+    EXPECT_EQ(result.gas_left, 0);
     ASSERT_EQ(result.output_size, 10);
-    EXPECT_EQ(bytes(&result.output_data[0], 10), "04050000000000000000"_hex);
+    auto a = from_hex("04050000000000000000");
+    EXPECT_EQ(bytes(&result.output_data[0], 10), a);
 }
 
 TEST_P(evm, calldataload_outofrange)
@@ -446,25 +577,55 @@ TEST_P(evm, calldataload_outofrange)
     EXPECT_EQ(std::count(result.output_data, result.output_data + result.output_size, 0), 32);
 }
 
+TEST_P(evm, calldatacopy)
+{
+    std::string s;
+    s += "366001600037";  // CALLDATASIZE 1 0 CALLDATACOPY
+    s += "600a6000f3";    // RETURN(0,10)
+    execute(s, "0102030405");
+    EXPECT_EQ(result.status_code, EVMC_SUCCESS);
+    EXPECT_EQ(gas_used, 23);
+    ASSERT_EQ(result.output_size, 10);
+    auto a = from_hex("02030405000000000000");
+    EXPECT_EQ(bytes(&result.output_data[0], 10), a);
+
+    execute(s);
+    EXPECT_EQ(result.status_code, EVMC_SUCCESS);
+    EXPECT_EQ(gas_used, 20);
+
+    execute("60ff66fffffffffffffa60003760ff6000f3");
+    EXPECT_EQ(gas_used, 66);
+    ASSERT_EQ(result.output_size, 0xff);
+    EXPECT_EQ(std::count(result.output_data, result.output_data + result.output_size, 0), 0xff);
+}
+
 TEST_P(evm, address)
 {
-    msg.recipient.bytes[0] = 0xcc;
-    const auto code = mstore(0, OP_ADDRESS) + ret(10, 10);
-    execute(17, code);
-    EXPECT_GAS_USED(EVMC_SUCCESS, 17);
+    std::string s;
+    s += "30600052";    // ADDRESS MSTORE(0)
+    s += "600a600af3";  // RETURN(10,10)
+    msg.destination.bytes[0] = 0xcc;
+    execute(17, s);
+    EXPECT_EQ(result.status_code, EVMC_SUCCESS);
+    EXPECT_EQ(result.gas_left, 0);
     ASSERT_EQ(result.output_size, 10);
-    EXPECT_EQ(bytes_view(&result.output_data[0], 10), "0000cc00000000000000"_hex);
+    auto a = from_hex("0000cc00000000000000");
+    EXPECT_EQ(bytes(&result.output_data[0], 10), a);
 }
 
 TEST_P(evm, caller_callvalue)
 {
+    std::string s;
+    s += "333401600052";  // CALLER CALLVALUE ADD MSTORE(0)
+    s += "600a600af3";    // RETURN(10,10)
     msg.sender.bytes[0] = 0xdd;
     msg.value.bytes[13] = 0xee;
-    const auto code = add(OP_CALLVALUE, OP_CALLER) + mstore(0) + ret(10, 10);
-    execute(22, code);
-    EXPECT_GAS_USED(EVMC_SUCCESS, 22);
+    execute(22, s);
+    EXPECT_EQ(result.status_code, EVMC_SUCCESS);
+    EXPECT_EQ(result.gas_left, 0);
     ASSERT_EQ(result.output_size, 10);
-    EXPECT_EQ(bytes_view(&result.output_data[0], 10), "0000ddee000000000000"_hex);
+    auto a = from_hex("0000ddee000000000000");
+    EXPECT_EQ(bytes(&result.output_data[0], 10), a);
 }
 
 TEST_P(evm, undefined)
@@ -481,47 +642,14 @@ TEST_P(evm, invalid)
     EXPECT_EQ(result.gas_left, 0);
 }
 
-TEST_P(evm, inner_stop)
-{
-    const auto code = push(0) + OP_STOP + OP_POP;
-    execute(3, code);
-    EXPECT_GAS_USED(EVMC_SUCCESS, 3);
-}
-
-TEST_P(evm, inner_return)
-{
-    const auto code = ret(0, 0) + push(0);
-    execute(6, code);
-    EXPECT_GAS_USED(EVMC_SUCCESS, 6);
-}
-
-TEST_P(evm, inner_revert)
-{
-    const auto code = revert(0, 0) + push(0);
-    execute(6, code);
-    EXPECT_GAS_USED(EVMC_REVERT, 6);
-}
-
-TEST_P(evm, inner_invalid)
-{
-    const auto code = push(0) + "fe" + OP_POP;
-    execute(5, code);
-    EXPECT_GAS_USED(EVMC_INVALID_INSTRUCTION, 5);
-}
-
-TEST_P(evm, inner_selfdestruct)
-{
-    rev = EVMC_FRONTIER;
-    const auto code = push(0) + OP_SELFDESTRUCT + push(0);
-    execute(3, code);
-    EXPECT_GAS_USED(EVMC_SUCCESS, 3);
-}
-
 TEST_P(evm, keccak256)
 {
-    execute(push(0x0800) + push(0x03ff) + OP_KECCAK256 + ret_top());
-    EXPECT_GAS_USED(EVMC_SUCCESS, 738);
-    EXPECT_OUTPUT_INT(0xaeffb38c06e111d84216396baefeb7fed397f303d5cb84a33f1e8b485c4a22da_u256);
+    execute("6108006103ff2060005260206000f3");
+    EXPECT_EQ(result.status_code, EVMC_SUCCESS);
+    EXPECT_EQ(gas_used, 738);
+    ASSERT_EQ(result.output_size, 32);
+    auto hash = from_hex("aeffb38c06e111d84216396baefeb7fed397f303d5cb84a33f1e8b485c4a22da");
+    EXPECT_EQ(bytes(&result.output_data[0], 32), hash);
 }
 
 TEST_P(evm, keccak256_empty)
@@ -554,13 +682,13 @@ TEST_P(evm, return_empty_buffer_at_offset_0)
 
 TEST_P(evm, return_empty_buffer_at_high_offset)
 {
-    host.tx_context.block_prev_randao =
+    host.tx_context.block_difficulty =
         0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff1_bytes32;
 
-    execute(push(0) + OP_PREVRANDAO + OP_RETURN);
+    execute(push(0) + OP_DIFFICULTY + OP_RETURN);
     EXPECT_STATUS(EVMC_SUCCESS);
 
-    execute(push(0) + OP_PREVRANDAO + OP_REVERT);
+    execute(push(0) + OP_DIFFICULTY + OP_REVERT);
     EXPECT_STATUS(EVMC_REVERT);
 }
 
@@ -696,9 +824,66 @@ TEST_P(evm, staticmode)
     }
 }
 
+TEST_P(evm, memory_big_allocation)
+{
+    constexpr auto size = 256 * 1024 + 1;
+    const auto code = ret(0, size);
+    execute(code);
+    EXPECT_STATUS(EVMC_SUCCESS);
+    ASSERT_EQ(result.output_size, size);
+    for (auto b : bytes_view{result.output_data, result.output_size})
+        EXPECT_EQ(b, 0);
+}
+
+TEST_P(evm, memory_grow_mstore8)
+{
+    const auto code = calldataload(0) + push(0) + OP_JUMPDEST + mstore8(OP_DUP1, OP_DUP1) + add(1) +
+                      jumpi(5, iszero(eq(OP_DUP3, OP_DUP1))) + ret(0, OP_MSIZE);
+
+    const size_t size = 4 * 1024 + 256 + 1;
+    auto input = std::ostringstream{};
+    input << std::hex << std::setw(64) << std::setfill('0') << size;
+
+    execute(code, input.str());
+    EXPECT_STATUS(EVMC_SUCCESS);
+    ASSERT_EQ(result.output_size, ((size + 31) / 32) * 32);
+
+    for (size_t i = 0; i < size; ++i)
+        EXPECT_EQ(result.output_data[i], i % 256);
+
+    for (size_t i = size; i < result.output_size; ++i)
+        EXPECT_EQ(result.output_data[i], 0);
+}
+
+TEST_P(evm, mstore8_memory_cost)
+{
+    auto code = push(0) + mstore8(0);
+    execute(12, code);
+    EXPECT_EQ(result.status_code, EVMC_SUCCESS);
+    execute(11, code);
+    EXPECT_EQ(result.status_code, EVMC_OUT_OF_GAS);
+}
+
+TEST_P(evm, keccak256_memory_cost)
+{
+    execute(45, keccak256(0, 1));
+    EXPECT_EQ(result.status_code, EVMC_SUCCESS);
+    execute(44, keccak256(0, 1));
+    EXPECT_EQ(result.status_code, EVMC_OUT_OF_GAS);
+}
+
+TEST_P(evm, calldatacopy_memory_cost)
+{
+    auto code = push(1) + push(0) + push(0) + OP_CALLDATACOPY;
+    execute(18, code);
+    EXPECT_EQ(result.status_code, EVMC_SUCCESS);
+    execute(17, code);
+    EXPECT_EQ(result.status_code, EVMC_OUT_OF_GAS);
+}
+
 TEST_P(evm, max_code_size_push1)
 {
-    constexpr auto max_code_size = 0x6000;
+    // TODO: Optimize the code generation.
     const auto code = (max_code_size / 2) * push(1);
     ASSERT_EQ(code.size(), max_code_size);
 
@@ -737,4 +922,127 @@ TEST_P(evm, reverse_16_stack_items)
     EXPECT_STATUS(EVMC_SUCCESS);
     ASSERT_EQ(result.output_size, n);
     EXPECT_EQ(hex({result.output_data, result.output_size}), "0102030405060708090a0b0c0d0e0f10");
+}
+
+struct memory_access_opcode
+{
+    evmc_opcode opcode;
+    int memory_index_arg;
+    int memory_size_arg;
+};
+
+struct memory_access_params
+{
+    uint64_t index;
+    uint64_t size;
+};
+
+memory_access_opcode memory_access_opcodes[] = {
+    {OP_KECCAK256, 0, 1},
+    {OP_CALLDATACOPY, 0, 2},
+    {OP_CODECOPY, 0, 2},
+    {OP_MLOAD, 0, -1},
+    {OP_MSTORE, 0, -1},
+    {OP_MSTORE8, 0, -1},
+    {OP_EXTCODECOPY, 1, 3},
+    {OP_RETURNDATACOPY, 0, 2},
+    {OP_LOG0, 0, 1},
+    {OP_LOG1, 0, 1},
+    {OP_LOG2, 0, 1},
+    {OP_LOG3, 0, 1},
+    {OP_LOG4, 0, 1},
+    {OP_RETURN, 0, 1},
+    {OP_REVERT, 0, 1},
+    {OP_CALL, 3, 4},
+    {OP_CALL, 5, 6},
+    {OP_CALLCODE, 3, 4},
+    {OP_CALLCODE, 5, 6},
+    {OP_DELEGATECALL, 2, 3},
+    {OP_DELEGATECALL, 4, 5},
+    {OP_STATICCALL, 2, 3},
+    {OP_STATICCALL, 4, 5},
+    {OP_CREATE, 1, 2},
+    {OP_CREATE2, 1, 2},
+};
+
+memory_access_params memory_access_test_cases[] = {
+    {0, 0x100000000},
+    {0x80000000, 0x80000000},
+    {0x100000000, 0},
+    {0x100000000, 1},
+    {0x100000000, 0x100000000},
+};
+
+TEST_P(evm, memory_access)
+{
+    rev = EVMC_CONSTANTINOPLE;
+    auto metrics = evmc_get_instruction_metrics_table(rev);
+    auto names = evmc_get_instruction_names_table(rev);
+
+    for (auto& p : memory_access_test_cases)
+    {
+        auto ss = std::ostringstream{};
+        ss << std::hex << std::setw(10) << std::setfill('0') << p.size;
+        const auto push_size = "64" + ss.str();
+        ss.str({});
+        ss << std::hex << std::setw(10) << std::setfill('0') << p.index;
+        const auto push_index = "64" + ss.str();
+
+        for (auto& t : memory_access_opcodes)
+        {
+            const int num_args = metrics[t.opcode].stack_height_required;
+            auto h = std::max(num_args, t.memory_size_arg + 1);
+            auto code = bytecode{};
+
+            if (t.memory_size_arg >= 0)
+            {
+                while (--h != t.memory_size_arg)
+                    code += push(0);
+
+                code += push_size;
+            }
+            else if (p.index == 0 || p.size == 0)
+                continue;  // Skip opcodes not having SIZE argument.
+
+            while (--h != t.memory_index_arg)
+                code += push(0);
+
+            code += push_index;
+
+            while (h-- != 0)
+                code += push(0);
+
+            code += bytecode{t.opcode};
+
+            auto const gas = 8796294610952;
+            execute(gas, code);
+
+            auto case_descr_str = std::ostringstream{};
+            case_descr_str << "offset = 0x" << std::hex << p.index << " size = 0x" << std::hex
+                           << p.size << " opcode " << names[t.opcode];
+            auto const case_descr = case_descr_str.str();
+
+            if (p.size == 0)  // It is allowed to request 0 size memory at very big offset.
+            {
+                EXPECT_EQ(result.status_code, (t.opcode == OP_REVERT) ? EVMC_REVERT : EVMC_SUCCESS)
+                    << case_descr;
+                EXPECT_NE(result.gas_left, 0) << case_descr;
+            }
+            else
+            {
+                if (t.opcode == OP_RETURNDATACOPY)
+                {
+                    // In case of RETURNDATACOPY the "invalid memory access" might also be returned.
+                    EXPECT_TRUE(result.status_code == EVMC_OUT_OF_GAS ||
+                                result.status_code == EVMC_INVALID_MEMORY_ACCESS);
+                }
+                else
+                {
+                    EXPECT_EQ(result.status_code, EVMC_OUT_OF_GAS) << case_descr;
+                }
+
+                EXPECT_EQ(result.gas_left, 0) << case_descr;
+            }
+        }
+    }
 }

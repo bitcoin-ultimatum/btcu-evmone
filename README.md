@@ -10,7 +10,7 @@
 > Fast Ethereum Virtual Machine implementation
 
 _evmone_ is a C++ implementation of the Ethereum Virtual Machine (EVM). 
-Created by members of the [Ipsilon] (ex-[Ewasm]) team, the project aims for clean, standalone EVM implementation 
+Created by members of the [Ewasm] team, the project aims for clean, standalone EVM implementation 
 that can be imported as an execution module by Ethereum Client projects. 
 The codebase of _evmone_ is optimized to provide fast and efficient execution of EVM smart contracts.
 
@@ -66,8 +66,8 @@ To build the evmone EVMC module (shared library), test, and benchmark:
 
 1. Fetch the source code:
    ```
-   git clone --recursive https://github.com/ethereum/evmone
-   cd evmone
+   git clone --recursive https://github.com/qtumproject/qtum-evmone
+   cd qtum-evmone
    ```
 
 2. Configure the project build and dependencies:
@@ -140,7 +140,6 @@ Licensed under the [Apache License, Version 2.0].
 [Apache License, Version 2.0]: LICENSE
 [ethereum]: https://ethereum.org
 [EVMC]: https://github.com/ethereum/evmc
-[Ipsilon]: https://github.com/ipsilon
 [Ewasm]: https://github.com/ewasm
 [intx]: https://github.com/chfast/intx
 [ethash]: https://github.com/chfast/ethash

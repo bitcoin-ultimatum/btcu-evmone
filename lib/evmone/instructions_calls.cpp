@@ -1,27 +1,24 @@
 // evmone: Fast Ethereum Virtual Machine implementation
-// Copyright 2019 The evmone Authors.
+// Copyright 2019-2020 The evmone Authors.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "instructions.hpp"
 
-namespace evmone::instr::core
+namespace evmone
 {
-template <evmc_opcode Op>
-evmc_status_code call_impl(StackTop stack, ExecutionState& state) noexcept
+template <evmc_call_kind Kind, bool Static>
+evmc_status_code call(ExecutionState& state) noexcept
 {
-    static_assert(
-        Op == OP_CALL || Op == OP_CALLCODE || Op == OP_DELEGATECALL || Op == OP_STATICCALL);
-
-    const auto gas = stack.pop();
-    const auto dst = intx::be::trunc<evmc::address>(stack.pop());
-    const auto value = (Op == OP_STATICCALL || Op == OP_DELEGATECALL) ? 0 : stack.pop();
+    const auto gas = state.stack.pop();
+    const auto dst = intx::be::trunc<evmc::address>(state.stack.pop());
+    const auto value = (Static || Kind == EVMC_DELEGATECALL) ? 0 : state.stack.pop();
     const auto has_value = value != 0;
-    const auto input_offset = stack.pop();
-    const auto input_size = stack.pop();
-    const auto output_offset = stack.pop();
-    const auto output_size = stack.pop();
+    const auto input_offset = state.stack.pop();
+    const auto input_size = state.stack.pop();
+    const auto output_offset = state.stack.pop();
+    const auto output_size = state.stack.pop();
 
-    stack.push(0);  // Assume failure.
+    state.stack.push(0);  // Assume failure.
 
     if (state.rev >= EVMC_BERLIN && state.host.access_account(dst) == EVMC_ACCESS_COLD)
     {
@@ -36,16 +33,13 @@ evmc_status_code call_impl(StackTop stack, ExecutionState& state) noexcept
         return EVMC_OUT_OF_GAS;
 
     auto msg = evmc_message{};
-    msg.kind = (Op == OP_DELEGATECALL) ? EVMC_DELEGATECALL :
-               (Op == OP_CALLCODE)     ? EVMC_CALLCODE :
-                                         EVMC_CALL;
-    msg.flags = (Op == OP_STATICCALL) ? uint32_t{EVMC_STATIC} : state.msg->flags;
+    msg.kind = Kind;
+    msg.flags = Static ? uint32_t{EVMC_STATIC} : state.msg->flags;
     msg.depth = state.msg->depth + 1;
-    msg.recipient = (Op == OP_CALL || Op == OP_STATICCALL) ? dst : state.msg->recipient;
-    msg.code_address = dst;
-    msg.sender = (Op == OP_DELEGATECALL) ? state.msg->sender : state.msg->recipient;
+    msg.destination = dst;
+    msg.sender = (Kind == EVMC_DELEGATECALL) ? state.msg->sender : state.msg->destination;
     msg.value =
-        (Op == OP_DELEGATECALL) ? state.msg->value : intx::be::store<evmc::uint256be>(value);
+        (Kind == EVMC_DELEGATECALL) ? state.msg->value : intx::be::store<evmc::uint256be>(value);
 
     if (size_t(input_size) > 0)
     {
@@ -55,9 +49,9 @@ evmc_status_code call_impl(StackTop stack, ExecutionState& state) noexcept
 
     auto cost = has_value ? 9000 : 0;
 
-    if constexpr (Op == OP_CALL)
+    if constexpr (Kind == EVMC_CALL)
     {
-        if (has_value && state.in_static_mode())
+        if (has_value && state.msg->flags & EVMC_STATIC)
             return EVMC_STATIC_MODE_VIOLATION;
 
         if ((has_value || state.rev < EVMC_SPURIOUS_DRAGON) && !state.host.account_exists(dst))
@@ -87,12 +81,13 @@ evmc_status_code call_impl(StackTop stack, ExecutionState& state) noexcept
     if (state.msg->depth >= 1024)
         return EVMC_SUCCESS;
 
-    if (has_value && intx::be::load<uint256>(state.host.get_balance(state.msg->recipient)) < value)
+    if (has_value &&
+        intx::be::load<uint256>(state.host.get_balance(state.msg->destination)) < value)
         return EVMC_SUCCESS;
 
     const auto result = state.host.call(msg);
     state.return_data.assign(result.output_data, result.output_size);
-    stack.top() = result.status_code == EVMC_SUCCESS;
+    state.stack.top() = result.status_code == EVMC_SUCCESS;
 
     if (const auto copy_size = std::min(size_t(output_size), result.output_size); copy_size > 0)
         std::memcpy(&state.memory[size_t(output_offset)], result.output_data, copy_size);
@@ -102,45 +97,47 @@ evmc_status_code call_impl(StackTop stack, ExecutionState& state) noexcept
     return EVMC_SUCCESS;
 }
 
-template evmc_status_code call_impl<OP_CALL>(StackTop stack, ExecutionState& state) noexcept;
-template evmc_status_code call_impl<OP_STATICCALL>(StackTop stack, ExecutionState& state) noexcept;
-template evmc_status_code call_impl<OP_DELEGATECALL>(
-    StackTop stack, ExecutionState& state) noexcept;
-template evmc_status_code call_impl<OP_CALLCODE>(StackTop stack, ExecutionState& state) noexcept;
+template evmc_status_code call<EVMC_CALL>(ExecutionState& state) noexcept;
+template evmc_status_code call<EVMC_CALL, true>(ExecutionState& state) noexcept;
+template evmc_status_code call<EVMC_DELEGATECALL>(ExecutionState& state) noexcept;
+template evmc_status_code call<EVMC_CALLCODE>(ExecutionState& state) noexcept;
 
 
-template <evmc_opcode Op>
-evmc_status_code create_impl(StackTop stack, ExecutionState& state) noexcept
+template <evmc_call_kind Kind>
+evmc_status_code create(ExecutionState& state) noexcept
 {
-    static_assert(Op == OP_CREATE || Op == OP_CREATE2);
-
-    if (state.in_static_mode())
+    if (state.msg->flags & EVMC_STATIC)
         return EVMC_STATIC_MODE_VIOLATION;
 
-    const auto endowment = stack.pop();
-    const auto init_code_offset = stack.pop();
-    const auto init_code_size = stack.pop();
+    const auto endowment = state.stack.pop();
+    const auto init_code_offset = state.stack.pop();
+    const auto init_code_size = state.stack.pop();
 
     if (!check_memory(state, init_code_offset, init_code_size))
         return EVMC_OUT_OF_GAS;
 
     auto salt = uint256{};
-    if constexpr (Op == OP_CREATE2)
+    if constexpr (Kind == EVMC_CREATE2)
     {
-        salt = stack.pop();
+        salt = state.stack.pop();
         auto salt_cost = num_words(static_cast<size_t>(init_code_size)) * 6;
         if ((state.gas_left -= salt_cost) < 0)
             return EVMC_OUT_OF_GAS;
     }
 
-    stack.push(0);
+#ifdef QTUM_BUILD
+    if (endowment != 0)
+        return EVMC_CREATE_WITH_VALUE;
+#endif
+
+    state.stack.push(0);
     state.return_data.clear();
 
     if (state.msg->depth >= 1024)
         return EVMC_SUCCESS;
 
     if (endowment != 0 &&
-        intx::be::load<uint256>(state.host.get_balance(state.msg->recipient)) < endowment)
+        intx::be::load<uint256>(state.host.get_balance(state.msg->destination)) < endowment)
         return EVMC_SUCCESS;
 
     auto msg = evmc_message{};
@@ -148,13 +145,13 @@ evmc_status_code create_impl(StackTop stack, ExecutionState& state) noexcept
     if (state.rev >= EVMC_TANGERINE_WHISTLE)
         msg.gas = msg.gas - msg.gas / 64;
 
-    msg.kind = (Op == OP_CREATE) ? EVMC_CREATE : EVMC_CREATE2;
+    msg.kind = Kind;
     if (size_t(init_code_size) > 0)
     {
         msg.input_data = &state.memory[size_t(init_code_offset)];
         msg.input_size = size_t(init_code_size);
     }
-    msg.sender = state.msg->recipient;
+    msg.sender = state.msg->destination;
     msg.depth = state.msg->depth + 1;
     msg.create2_salt = intx::be::store<evmc::bytes32>(salt);
     msg.value = intx::be::store<evmc::uint256be>(endowment);
@@ -164,11 +161,11 @@ evmc_status_code create_impl(StackTop stack, ExecutionState& state) noexcept
 
     state.return_data.assign(result.output_data, result.output_size);
     if (result.status_code == EVMC_SUCCESS)
-        stack.top() = intx::be::load<uint256>(result.create_address);
+        state.stack.top() = intx::be::load<uint256>(result.create_address);
 
     return EVMC_SUCCESS;
 }
 
-template evmc_status_code create_impl<OP_CREATE>(StackTop stack, ExecutionState& state) noexcept;
-template evmc_status_code create_impl<OP_CREATE2>(StackTop stack, ExecutionState& state) noexcept;
-}  // namespace evmone::instr::core
+template evmc_status_code create<EVMC_CREATE>(ExecutionState& state) noexcept;
+template evmc_status_code create<EVMC_CREATE2>(ExecutionState& state) noexcept;
+}  // namespace evmone
